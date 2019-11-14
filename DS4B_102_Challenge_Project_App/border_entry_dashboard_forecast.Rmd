@@ -1,0 +1,375 @@
+---
+title: "Border Entry Dashboard"
+output: 
+  flexdashboard::flex_dashboard:
+    orientation: rows
+    vertical_layout: fill
+    #css: css/styles-default.css
+    #logo: img/business-science-logo.png
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(shiny)
+library(shinyWidgets)
+library(shinyjs)
+
+# Core
+library(tidyverse)
+library(tidyquant)
+library(DT)
+
+# Interactive Visualizations
+library(plotly)
+
+# Modeling libraries
+library(parsnip)
+library(xgboost)
+library(timetk)
+
+# Read in Dataset
+library(readr)
+
+source("entry_forecast.R")
+```
+
+```{css}
+    # .bootstrap-switch, .bootstrap-switch-handle-on,
+    # .bootstrap-switch, .bootstrap-switch-handle-off,
+    # .bootstrap-switch, .bootstrap-switch-label {
+    # display: inline-block;
+    # vertical-align: baseline;
+}
+```
+```{r}
+# renderUI({
+#     if(input$view_mode) {
+#         #includeCSS("css/styles-default.css")
+#     } else {
+#         #includeCSS("css/styles-dark.css")
+#     }
+# })
+
+```
+
+```{r}
+#setwd("C:/Users/charl/Desktop/BusinessScienceR/DS4B_102_Challenge_Project_App/")
+
+all_us_data_tbl <- read_csv("data/cleaned_data.csv")
+
+processed_data_tbl <- all_us_data_tbl %>% 
+    filter(measure %in% c("Personal Vehicle Passengers" , "Bus Passengers", "Pedestrians", "Train Passengers")) %>%
+    #group_by(entry_date, measure) %>% 
+    #mutate(people_cnt_method_sum = sum(value)) %>% 
+    #ungroup() %>%
+    rename(entry_method = measure, people_cnt = value)
+```
+
+Column {.sidebar}
+---------------------------------------------------------------
+
+```{r}
+useShinyjs(rmd = TRUE)
+
+ dateRangeInput(
+   inputId = "date_range", 
+   label   = h4("Date Range"),
+   #start   = min(processed_data_tbl$entry_date), 
+   start   = "2016-01-01", 
+   end     = "2018-12-31", 
+   min     = min(processed_data_tbl$entry_date), 
+   max     = max(processed_data_tbl$entry_date), 
+   startview = "month")
+ 
+shinyWidgets::checkboxGroupButtons(
+  inputId   = "border", 
+  label     = h4("Border"), 
+  choices   = unique(processed_data_tbl$border), 
+  selected  = unique(processed_data_tbl$border), 
+  checkIcon = list(
+    yes = icon("ok", lib = "glyphicon"),
+    no  = icon("remove", lib = "glyphicon")
+  ))
+
+shinyWidgets::pickerInput(
+  inputId  = "entry_state",
+  label    = h4("Entry State"),
+  choices  = sort(unique(processed_data_tbl$state)),
+  selected = unique(processed_data_tbl$state),
+  multiple = TRUE,
+  options  = list(
+    `actions-box` = TRUE,
+    size = 10,
+    `selected-text-format` = "count > 3"
+  )
+)
+
+shinyWidgets::pickerInput(
+  inputId  = "entry_method",
+  label    = h4("Entry Method"),
+  choices  = sort(unique(processed_data_tbl$entry_method)),
+  selected = unique(processed_data_tbl$entry_method),
+  multiple = TRUE,
+  options  = list(
+    `actions-box` = TRUE,
+    size = 10,
+    `selected-text-format` = "count > 3"
+  )
+)
+
+# Forecast MODE ---
+br()
+hr()
+br()
+
+h4("Forecast Mode")
+shinyWidgets::switchInput(inputId = "forecast_mode",
+                          value = FALSE,
+                          onStatus = "success",
+                          offStatus = "primary",
+                          onLabel = "On",
+                          offLabel = "Off",
+                          handleWidth = 80,
+                          labelWidth = 80,
+                          inline = TRUE,
+                          width = "150px")
+
+# APPLY Buttons ---
+
+conditionalPanel(
+    condition = "input.forecast_mode == 1", 
+    numericInput(inputId = "n_future",
+                 label = "Forecast Horizon", 
+                 value = 12, 
+                 min = 1))
+
+br()
+hr()
+br()
+
+actionButton(inputId = "apply", label = "Apply", icon = icon("play"))
+
+actionButton(inputId = "reset", label = "Reset", icon = icon("sync"))
+
+observeEvent(eventExpr = input$reset, handlerExpr = {
+
+  updateDateRangeInput(
+    session = session,
+    inputId = "date_range",
+    start   = min(processed_data_tbl$entry_date),
+    end     = max(processed_data_tbl$entry_date))
+
+  updateCheckboxGroupButtons(
+    session  = session,
+    inputId  = "border",
+    selected = unique(processed_data_tbl$border))
+
+  
+  updatePickerInput(
+    session = session,
+    inputId = "entry_state",
+    selected = unique(processed_data_tbl$state))
+  
+  updatePickerInput(
+      session = session,
+      inputId = "entry_method",
+      selected = unique(processed_data_tbl$entry_method))
+
+
+
+  updateRadioGroupButtons(
+    session = session,
+    inputId = "time_unit",
+    selected = "month"
+  )
+  
+  updateSwitchInput(
+      session = session,
+      inputId = "forecast_mode",
+      value = FALSE)
+
+  updateNumericInput(
+      session = session,
+      inputId = "n_future",
+      value = 12)
+  
+  shinyjs::delay(ms = 300, expr = {
+    shinyjs::click(id = "apply")
+  })
+ 
+  
+})
+
+```
+
+```{r}
+processed_data_filtered_tbl <- eventReactive(
+  eventExpr = input$apply,
+
+  valueExpr = {
+
+    processed_data_tbl %>%
+
+      filter(entry_date %>% between(left  = input$date_range[1],
+                                    right = input$date_range[2])) %>%
+
+      filter(border %in% input$border) %>%
+
+      filter(state %in% input$entry_state) %>%
+
+      filter(entry_method %in% input$entry_method)
+  },
+  ignoreNULL = FALSE
+)
+```
+
+Row {data-height=850}
+---------------------------------------------------------------
+
+### Border Entry Summary
+
+```{r}
+summary_data_tbl <- processed_data_tbl %>% 
+    mutate(entry_date = floor_date(entry_date, unit = "year")) %>% 
+    group_by(entry_date, entry_method) %>% 
+    mutate(people_cnt = sum(people_cnt)) %>% 
+    ungroup() %>% 
+    mutate(label = str_glue("Date: {entry_date}
+                            Method: {entry_method}
+                            People: {people_cnt}"))
+
+output$plotly_0 <- renderPlot(expr = {
+              summary_data_tbl %>% 
+                     ggplot(aes(entry_date, people_cnt, fill = border)) +
+                     geom_col() +
+                     scale_y_continuous(labels = scales::comma_format()) + theme_tq() +
+                     labs(title="Border Entry\n01/1996 to 03/2019", subtitle = "Method", x= "", y="Number of People", fill="Border") +
+                     facet_wrap(~ entry_method, ncol = 2, scales = "free_y") +
+                     theme(plot.title = element_text(hjust = 0.5), plot.subtitle = element_text(hjust = 0.5))
+  
+})
+
+plotOutput(outputId = "plotly_0")
+
+```
+
+
+
+
+
+Row {data-height=850}
+---------------------------------------------------------------
+
+### Border Entry by Port
+
+```{r}
+geo_plot_tbl <- reactive({
+
+  processed_data_filtered_tbl() %>%
+    group_by(port_code) %>%
+    mutate(people_cnt = sum(people_cnt), lat = mean(lat), long = mean(long)) %>%
+    ungroup() %>%
+    mutate(label_text = str_glue("Port: {port_name}
+                            Border Entry Count: {round(people_cnt/1e6,2)} millions"))
+
+})
+
+```
+
+
+```{r}
+output$plotly_1 <- renderPlotly(expr = {
+
+  geo_plot_tbl() %>%
+      plot_geo(locationmode = "USA-states", sizes = c(1, 250)) %>%
+      add_markers(
+          x = ~long,
+          y = ~lat,
+          size = ~people_cnt,
+          color = ~people_cnt,
+          hoverinfo = "text",
+          text = ~label_text
+      ) %>%
+      layout(
+          title = "Border Entry",
+          geo = list(
+              scope = "usa",
+              projection = list(type = "albers usa"),
+              showlake  = TRUE,
+              lakecolor  = toRGB("gray85"),
+              subunitwidth = 1,
+              countrywidth = 1
+          )
+      ) %>%
+      colorbar(title = "Size by Entry Count")
+  })
+
+plotlyOutput(outputId = "plotly_1")
+
+```
+
+
+
+Row {data-height=950}
+---------------------------------------------------------------
+
+
+### Border Entry Over Time
+
+```{r}
+shinyWidgets::radioGroupButtons(
+  inputId  = "time_unit", 
+  label    = "Time Unit", 
+  choices  = c("M" = "month", "Q" = "quarter", "Y" = "year"), 
+  selected = "month", 
+  status   = "success", 
+  justified = TRUE, 
+  checkIcon = list(
+    yes = icon("ok", lib = "glyphicon"), 
+    no  = NULL
+    )
+)
+
+observeEvent(eventExpr = input$time_unit, handlerExpr = {
+    if(input$forecast_mode) {
+          shinyjs::delay(ms = 300, expr = {
+              shinyjs::click(id = "apply")
+              })
+    }
+})
+
+observeEvent(eventExpr = input$forecast_mode, {
+    delay(300, click(id = "apply"))
+}, once = TRUE)
+```
+
+
+```{r}
+time_plot_tbl <- reactive({
+
+    processed_data_filtered_tbl() %>% 
+      aggregate_time_series(time_unit = input$time_unit)
+})
+
+time_plot_predictions_tbl <- eventReactive(eventExpr = input$apply, {
+    if(input$forecast_mode) {
+        time_plot_tbl() %>% 
+            generate_forecast(n_future = input$n_future, seed = 123)
+    }
+}, ignoreNULL = FALSE)
+
+output$plotly_2 <- renderPlotly({
+    if(input$forecast_mode) {
+        p <- time_plot_predictions_tbl() %>% plot_forecast()
+    } else {
+        p <- time_plot_tbl() %>% plot_time_series()
+    }
+
+    return(p)
+})
+
+plotlyOutput(outputId = "plotly_2")
+  
+```
+
